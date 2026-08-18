@@ -98,10 +98,13 @@ def main():
                 arrays = [load_npy(p) for p in chunk_paths]
                 batch_np = np.stack(arrays, axis=0)  # Standardized to (B, 1, H, W)
                 
-                batch = torch.from_numpy(batch_np).pin_memory().to(device, non_blocking=True)
-                
-                if args.fp16 and device.type == "cuda":
-                    batch = batch.half()
+                batch = torch.from_numpy(batch_np)
+                if device.type == "cuda":
+                    batch = batch.pin_memory().to(device, non_blocking=True)
+                    if args.fp16:
+                        batch = batch.half()
+                else:
+                    batch = batch.to(device)
 
                 out = model(batch).float().cpu().numpy()
 
