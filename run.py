@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+import sys
 import time
 
 import numpy as np
@@ -13,7 +14,14 @@ def load_npy(path):
     arr = np.load(path, allow_pickle=True)
     if isinstance(arr, np.ndarray) and arr.dtype == object and arr.shape == ():
         arr = arr.item()
-    return np.asarray(arr, dtype=np.float32)
+    arr = np.asarray(arr, dtype=np.float32)
+    
+    # Standardize input dimensions to (1, H, W)
+    if arr.ndim == 2:
+        arr = arr[None, :, :]
+    elif arr.ndim == 3 and arr.shape[2] == 1:
+        arr = arr.transpose(2, 0, 1)
+    return arr
 
 
 def main():
@@ -21,16 +29,27 @@ def main():
     ap.add_argument("input_dir", help="Path to input directory")
     ap.add_argument("output_dir", help="Path to output directory")
     ap.add_argument("--batch_size", type=int, default=16)
-    # Use BooleanOptionalAction to allow both --fp16 and --no-fp16 flags
     ap.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--compile", action="store_true", help="enable torch.compile()")
     args = ap.parse_args()
 
-    model_path = glob.glob("models/*.pt")
-    args.ckpt = model_path[0]
+    # Resolve paths relative to script location so execution works from any working directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(script_dir, "models")
+    model_paths = glob.glob(os.path.join(models_dir, "*.pt")) + glob.glob(os.path.join(models_dir, "*.pth"))
+    
+    if not model_paths:
+        print(f"[error] No .pt or .pth weights found in '{models_dir}'.")
+        sys.exit(1)
+        
+    args.ckpt = model_paths[0]
 
     t_start = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
     
     print(f"[info] Loading checkpoint from {args.ckpt}")
     ckpt = torch.load(args.ckpt, map_location=device)
@@ -38,7 +57,7 @@ def main():
 
     if "ema" in ckpt:
         model.load_state_dict(ckpt["ema"], strict=True)
-        print("[info] using EMA weights")
+        print("[info] Using EMA weights")
     else:
         model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt, strict=True)
 
@@ -48,8 +67,7 @@ def main():
     model.eval()
 
     if args.compile:
-        print("[info] compiling model with torch.compile()...")
-        # dynamic=True prevents recompilation overhead when processing different image shapes
+        print("[info] Compiling model with torch.compile()...")
         model = torch.compile(model, dynamic=True)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -57,20 +75,15 @@ def main():
     n = len(paths)
 
     if n == 0:
-        print(f"\n[error] No .npy files found in {args.input_dir}")
-        print("Please verify the --input_dir path.")
+        print(f"\n[error] No .npy files found in '{args.input_dir}'")
         return
 
-    # Memory Optimization: Only read shapes during the initial scan using memory mapping.
-    # We store the paths grouped by shape, but we DO NOT hold the array data in RAM.
     print(f"[info] Scanning {n} files for shape grouping...")
     by_shape = {}
     for path in paths:
         try:
-            # mmap_mode='r' reads the header to get the shape without loading the full array
             shape = np.load(path, mmap_mode='r', allow_pickle=True).shape
         except Exception:
-            # Fallback for complex object arrays if mmap fails
             shape = load_npy(path).shape
         by_shape.setdefault(shape, []).append(path)
 
@@ -82,11 +95,9 @@ def main():
             for i in range(0, len(path_group), args.batch_size):
                 chunk_paths = path_group[i:i + args.batch_size]
                 
-                # Lazy load the arrays only when they are needed for the current batch
                 arrays = [load_npy(p) for p in chunk_paths]
-                batch_np = np.stack(arrays, axis=0)[:, None, :, :]
+                batch_np = np.stack(arrays, axis=0)  # Standardized to (B, 1, H, W)
                 
-                # Use .pin_memory() before .to(non_blocking=True) for true async transfers
                 batch = torch.from_numpy(batch_np).pin_memory().to(device, non_blocking=True)
                 
                 if args.fp16 and device.type == "cuda":
@@ -99,12 +110,10 @@ def main():
 
                 for j, path in enumerate(chunk_paths):
                     out_path = os.path.join(args.output_dir, os.path.basename(path))
-                    # out[j, 0] gives a grayscale (H, W) array
                     np.save(out_path, out[j, 0].astype(np.float32))
 
     t_end = time.time()
 
-    # Print summary statistics
     print("\n--- Inference Summary ---")
     print(f"Images Processed: {n}")
     print(f"FP16 Enabled:     {args.fp16 and device.type == 'cuda'}")
