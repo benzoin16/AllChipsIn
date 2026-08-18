@@ -18,8 +18,8 @@ def load_npy(path):
 
 def main():
     ap = argparse.ArgumentParser(description="Run NAFNetSR2x inference on a directory of .npy LR images.")
-    ap.add_argument("input_dir", required=True)
-    ap.add_argument("output_dir", required=True)
+    ap.add_argument("input_dir", help="Path to input directory")
+    ap.add_argument("output_dir", help="Path to output directory")
     ap.add_argument("--batch_size", type=int, default=16)
     # Use BooleanOptionalAction to allow both --fp16 and --no-fp16 flags
     ap.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
