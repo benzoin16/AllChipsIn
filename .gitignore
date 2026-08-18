@@ -1,0 +1,24 @@
+# data & model artifacts
+data/
+infer/
+*.npy
+*.pt
+*.pth
+*.onnx
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# notebooks
+.ipynb_checkpoints/
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/
